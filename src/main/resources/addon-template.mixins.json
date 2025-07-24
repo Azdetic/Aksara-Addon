@@ -1,0 +1,9 @@
+{
+  "required": true,
+  "package": "com.example.addon.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": ["ExampleMixin", "ChatHudMixin"],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
