@@ -5,6 +5,7 @@ import com.example.addon.commands.AutoReplyCommand;
 import com.example.addon.hud.HudExample;
 import com.example.addon.modules.ModuleExample;
 import com.example.addon.modules.AutoReply;
+import com.example.addon.modules.AutoExpBottle;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -27,6 +28,7 @@ public class AddonTemplate extends MeteorAddon {
         // Modules
         Modules.get().add(new ModuleExample());
         Modules.get().add(new AutoReply());
+        Modules.get().add(new AutoExpBottle());
 
         // Commands
         Commands.add(new CommandExample());
