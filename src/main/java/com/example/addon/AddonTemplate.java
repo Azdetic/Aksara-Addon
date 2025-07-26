@@ -8,6 +8,8 @@ import com.example.addon.modules.ModuleExample;
 import com.example.addon.modules.AutoReply;
 import com.example.addon.modules.AutoExpBottle;
 import com.example.addon.modules.AutoSell;
+import com.example.addon.modules.AutoFeed;
+import com.example.addon.modules.AutoHeal;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -32,6 +34,8 @@ public class AddonTemplate extends MeteorAddon {
         Modules.get().add(new AutoReply());
         Modules.get().add(new AutoExpBottle());
         Modules.get().add(new AutoSell());
+        Modules.get().add(new AutoFeed());
+        Modules.get().add(new AutoHeal());
 
         // Commands
         Commands.add(new CommandExample());

@@ -33,7 +33,7 @@ public class AutoSell extends Module {
 
     private final Setting<Integer> delay = sgGeneral.add(new IntSetting.Builder()
         .name("delay")
-        .description("Delay between sell commands in milliseconds")
+        .description("Delay between sell commands in milliseconds (1000ms = 1 second)")
         .defaultValue(1000)
         .min(100)
         .max(10000)
