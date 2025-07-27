@@ -7,13 +7,14 @@ import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
+import net.minecraft.item.*;
 import net.minecraft.sound.SoundEvents;
+import net.minecraft.entity.player.PlayerEntity;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static meteordevelopment.meteorclient.MeteorClient.mc;
 
 public class AutoDrop extends Module {
     private final SettingGroup sgGeneral = this.settings.getDefaultGroup();
@@ -72,6 +73,13 @@ public class AutoDrop extends Module {
     );
 
     // === SAFETY SETTINGS ===
+    private final Setting<Boolean> protectTools = sgSafety.add(new BoolSetting.Builder()
+        .name("protect-tools")
+        .description("Never drop any tools (pickaxe, axe, shovel, sword, etc.)")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<List<Item>> protectedItems = sgSafety.add(new ItemListSetting.Builder()
         .name("protected-items")
         .description("Items that will NEVER be dropped (safety blacklist)")
@@ -176,6 +184,14 @@ public class AutoDrop extends Module {
                     continue;
                 }
 
+                // Safety check: never drop tools if protection is enabled
+                if (protectTools.get() && isToolItem(item)) {
+                    if (enableNotifications.get()) {
+                        ChatUtils.warning("§e[AUTO DROP+] §cSkipped tool item: §f" + item.getName().getString());
+                    }
+                    continue;
+                }
+
                 int itemCount = InvUtils.find(item).count();
 
                 // Skip if no items found
@@ -236,39 +252,73 @@ public class AutoDrop extends Module {
 
         int dropped = 0;
 
-        // Use InvUtils for safer item dropping
+        // SAFETY CHECK: Double verify item is in drop list and not in protected list
+        if (!dropList.get().contains(item)) {
+            if (enableNotifications.get()) {
+                ChatUtils.warning("§e[AUTO DROP+] §cPrevented dropping item not in list: §f" + item.getName().getString());
+            }
+            return false;
+        }
+
+        if (protectedItems.get().contains(item)) {
+            if (enableNotifications.get()) {
+                ChatUtils.warning("§e[AUTO DROP+] §cPrevented dropping protected item: §f" + item.getName().getString());
+            }
+            return false;
+        }
+
+        // Find and drop items more carefully
         while (dropped < amount) {
-            int slot = InvUtils.findInHotbar(item).slot();
-            if (slot == -1) {
-                // Try to find in main inventory and move to hotbar
-                slot = InvUtils.find(item).slot();
-                if (slot == -1) break; // No more items found
-
-                // Find empty hotbar slot
-                int emptyHotbarSlot = -1;
-                for (int i = 0; i < 9; i++) {
-                    if (mc.player.getInventory().getStack(i).isEmpty()) {
-                        emptyHotbarSlot = i;
-                        break;
-                    }
-                }
-
-                if (emptyHotbarSlot != -1) {
-                    // Move item to hotbar
-                    InvUtils.move().from(slot).to(emptyHotbarSlot);
-                    slot = emptyHotbarSlot;
-                } else {
-                    // Use current selected slot
-                    InvUtils.move().from(slot).to(mc.player.getInventory().selectedSlot);
-                    slot = mc.player.getInventory().selectedSlot;
+            // First, look for the EXACT item in hotbar
+            int targetSlot = -1;
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = mc.player.getInventory().getStack(i);
+                if (!stack.isEmpty() && stack.getItem() == item) {
+                    targetSlot = i;
+                    break;
                 }
             }
 
-            // Drop one item from the slot
-            if (slot != -1) {
-                InvUtils.drop().slot(slot);
-                dropped++;
+            // If not in hotbar, look in main inventory
+            if (targetSlot == -1) {
+                for (int i = 9; i < 36; i++) {
+                    ItemStack stack = mc.player.getInventory().getStack(i);
+                    if (!stack.isEmpty() && stack.getItem() == item) {
+                        // Find empty hotbar slot to move to
+                        int emptyHotbarSlot = -1;
+                        for (int j = 0; j < 9; j++) {
+                            if (mc.player.getInventory().getStack(j).isEmpty()) {
+                                emptyHotbarSlot = j;
+                                break;
+                            }
+                        }
+
+                        if (emptyHotbarSlot != -1) {
+                            // Move ONLY the specific item to hotbar
+                            InvUtils.move().from(i).to(emptyHotbarSlot);
+                            targetSlot = emptyHotbarSlot;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Drop ONLY if we found the exact item
+            if (targetSlot != -1) {
+                // Double check the slot still contains our target item
+                ItemStack slotStack = mc.player.getInventory().getStack(targetSlot);
+                if (!slotStack.isEmpty() && slotStack.getItem() == item) {
+                    InvUtils.drop().slot(targetSlot);
+                    dropped++;
+                } else {
+                    // Something went wrong, stop to prevent dropping wrong items
+                    if (enableNotifications.get()) {
+                        ChatUtils.error("§e[AUTO DROP+] §cStopped dropping - slot mismatch detected!");
+                    }
+                    break;
+                }
             } else {
+                // No more items found
                 break;
             }
         }
@@ -295,6 +345,28 @@ public class AutoDrop extends Module {
         return mc.world.getPlayers().stream()
             .anyMatch(player -> player != mc.player &&
                      mc.player.distanceTo(player) <= range);
+    }
+
+    // Check if an item is a tool that should be protected
+    private boolean isToolItem(Item item) {
+        // Check for common tools by comparing to known tool items
+        return item == Items.WOODEN_PICKAXE || item == Items.STONE_PICKAXE ||
+               item == Items.IRON_PICKAXE || item == Items.GOLDEN_PICKAXE ||
+               item == Items.DIAMOND_PICKAXE || item == Items.NETHERITE_PICKAXE ||
+               item == Items.WOODEN_AXE || item == Items.STONE_AXE ||
+               item == Items.IRON_AXE || item == Items.GOLDEN_AXE ||
+               item == Items.DIAMOND_AXE || item == Items.NETHERITE_AXE ||
+               item == Items.WOODEN_SHOVEL || item == Items.STONE_SHOVEL ||
+               item == Items.IRON_SHOVEL || item == Items.GOLDEN_SHOVEL ||
+               item == Items.DIAMOND_SHOVEL || item == Items.NETHERITE_SHOVEL ||
+               item == Items.WOODEN_HOE || item == Items.STONE_HOE ||
+               item == Items.IRON_HOE || item == Items.GOLDEN_HOE ||
+               item == Items.DIAMOND_HOE || item == Items.NETHERITE_HOE ||
+               item == Items.WOODEN_SWORD || item == Items.STONE_SWORD ||
+               item == Items.IRON_SWORD || item == Items.GOLDEN_SWORD ||
+               item == Items.DIAMOND_SWORD || item == Items.NETHERITE_SWORD ||
+               item == Items.BOW || item == Items.CROSSBOW || item == Items.TRIDENT ||
+               item == Items.FISHING_ROD || item == Items.SHEARS || item == Items.FLINT_AND_STEEL;
     }
 
     public int getTotalDropped() {
