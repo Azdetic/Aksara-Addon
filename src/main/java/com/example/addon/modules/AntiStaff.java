@@ -2,12 +2,15 @@ package com.example.addon.modules;
 
 import com.example.addon.AddonTemplate;
 import meteordevelopment.meteorclient.events.game.ReceiveMessageEvent;
+import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.network.PlayerListEntry;
+import net.minecraft.network.packet.c2s.play.RequestCommandCompletionsC2SPacket;
+import net.minecraft.network.packet.s2c.play.CommandSuggestionsS2CPacket;
 import net.minecraft.world.GameMode;
 
 import java.util.*;
@@ -78,6 +81,25 @@ public class AntiStaff extends Module {
     );
 
     // Detection Settings
+    private final Setting<String> vanishCommand = sgDetection.add(new StringSetting.Builder()
+        .name("vanish-command")
+        .description("Command for vanish detection (most accurate method).")
+        .defaultValue("minecraft:msg")
+        .visible(() -> enableVanishDetection.get())
+        .build()
+    );
+
+    private final Setting<Integer> vanishCheckInterval = sgDetection.add(new IntSetting.Builder()
+        .name("vanish-interval")
+        .description("Interval between vanish checks in ticks (20 = 1 second).")
+        .defaultValue(100)
+        .min(20)
+        .max(600)
+        .sliderMax(200)
+        .visible(() -> enableVanishDetection.get())
+        .build()
+    );
+
     private final Setting<Integer> detectionCooldown = sgDetection.add(new IntSetting.Builder()
         .name("detection-cooldown")
         .description("Cooldown between detections in seconds (0 = no cooldown, 30 = 30 seconds).")
@@ -192,20 +214,19 @@ public class AntiStaff extends Module {
     private final Map<String, Long> lastDetectionTime = new ConcurrentHashMap<>();
     private final Set<String> detectedStaff = new HashSet<>();
     private ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    // Command completion vanish detection (most accurate)
+    private final List<Integer> completionIDs = new ArrayList<>();
+    private List<String> completionPlayerCache = new ArrayList<>();
     private final Random random = new Random();
     private long lastTickTime = 0;
-
-    // Player state tracking
+    private int vanishTimer = 0;    // Player state tracking (simplified for command completion detection)
     private static class PlayerState {
-        boolean wasVisible = false;
         GameMode lastGameMode = null;
-        long lastSeen = 0;
         boolean isStaff = false;
 
-        PlayerState(boolean visible, GameMode gameMode, boolean staff) {
-            this.wasVisible = visible;
+        PlayerState(GameMode gameMode, boolean staff) {
             this.lastGameMode = gameMode;
-            this.lastSeen = System.currentTimeMillis();
             this.isStaff = staff;
         }
     }
@@ -249,6 +270,13 @@ public class AntiStaff extends Module {
         if (currentTime - lastTickTime < 1000) return; // Check every second
         lastTickTime = currentTime;
 
+        // Enhanced vanish detection timer - always use command completion
+        vanishTimer++;
+        if (vanishTimer >= vanishCheckInterval.get()) {
+            performCommandCompletionCheck();
+            vanishTimer = 0;
+        }
+
         updatePlayerStates();
     }
 
@@ -261,6 +289,22 @@ public class AntiStaff extends Module {
         // Check for join/leave messages to detect staff
         if (enableStaffAutoDetect.get()) {
             checkJoinLeaveMessages(message);
+        }
+    }
+
+    @EventHandler
+    private void onPacketReceive(PacketEvent.Receive event) {
+        if (!isActive()) return;
+
+        // Command completion vanish detection (most accurate)
+        if (enableVanishDetection.get() &&
+            event.packet instanceof CommandSuggestionsS2CPacket) {
+
+            CommandSuggestionsS2CPacket packet = (CommandSuggestionsS2CPacket) event.packet;
+            if (completionIDs.contains(packet.id())) {
+                processCommandCompletions(packet);
+                event.cancel();
+            }
         }
     }
 
@@ -285,7 +329,7 @@ public class AntiStaff extends Module {
 
                 if (previousState == null) {
                     // New player detected
-                    playerStates.put(playerName, new PlayerState(true, currentGameMode, isStaff));
+                    playerStates.put(playerName, new PlayerState(currentGameMode, isStaff));
 
                     if (isStaff) {
                         onStaffDetected(playerName, "joined server", currentGameMode);
@@ -300,39 +344,55 @@ public class AntiStaff extends Module {
                     }
 
                     // Update state
-                    previousState.wasVisible = true;
                     previousState.lastGameMode = currentGameMode;
-                    previousState.lastSeen = System.currentTimeMillis();
                     previousState.isStaff = isStaff;
                 }
             }
         }
 
-        // Check for vanished players
-        if (enableVanishDetection.get()) {
-            checkVanishedPlayers(currentPlayers);
-        }
+        // Check for vanished players - not needed with command completion
+        // Command completion method is more accurate
     }
 
-    private void checkVanishedPlayers(Set<String> currentPlayers) {
-        long currentTime = System.currentTimeMillis();
+    private void performCommandCompletionCheck() {
+        if (mc.getNetworkHandler() == null) return;
 
-        for (Map.Entry<String, PlayerState> entry : playerStates.entrySet()) {
-            String playerName = entry.getKey();
-            PlayerState state = entry.getValue();
+        int id = random.nextInt(200);
+        completionIDs.add(id);
+        mc.getNetworkHandler().sendPacket(new RequestCommandCompletionsC2SPacket(id, vanishCommand.get() + " "));
+    }
 
-            // If player was visible but is no longer in player list
-            if (state.wasVisible && !currentPlayers.contains(playerName)) {
-                // Check if enough time has passed (they might have legitimately left)
-                if (currentTime - state.lastSeen > 5000) { // 5 second grace period
-                    onPlayerVanished(playerName);
-                    state.wasVisible = false;
-                }
+    private void processCommandCompletions(CommandSuggestionsS2CPacket packet) {
+        List<String> lastUsernames = new ArrayList<>(completionPlayerCache);
+
+        completionPlayerCache.clear();
+        for (var suggestion : packet.getSuggestions().getList()) {
+            completionPlayerCache.add(suggestion.getText());
+        }
+
+        if (lastUsernames.isEmpty()) return;
+
+        // Check for players who joined or left
+        for (String playerName : completionPlayerCache) {
+            if (playerName.equals(mc.player.getName().getString())) continue;
+            if (playerName.contains(" ") || playerName.length() < 3 || playerName.length() > 16) continue;
+
+            if (!lastUsernames.contains(playerName) && shouldMonitorPlayer(playerName)) {
+                ChatUtils.info("Player joined: " + playerName);
             }
         }
-    }
 
-    private void checkJoinLeaveMessages(String message) {
+        for (String playerName : lastUsernames) {
+            if (playerName.equals(mc.player.getName().getString())) continue;
+            if (playerName.contains(" ") || playerName.length() < 3 || playerName.length() > 16) continue;
+
+            if (!completionPlayerCache.contains(playerName) && shouldMonitorPlayer(playerName)) {
+                onStaffDetected(playerName, "vanished (detected via command completion)", null);
+            }
+        }
+
+        completionIDs.remove(Integer.valueOf(packet.id()));
+    }    private void checkJoinLeaveMessages(String message) {
         // Common join message patterns
         if (message.contains(" joined the game") || message.contains(" joined the server")) {
             String playerName = extractPlayerFromJoinMessage(message);
@@ -403,10 +463,6 @@ public class AntiStaff extends Module {
         } else if (actionType.get() == ActionType.COMMAND) {
             executeCustomCommand();
         }
-    }
-
-    private void onPlayerVanished(String playerName) {
-        onStaffDetected(playerName, "vanished", null);
     }
 
     private void onGamemodeChanged(String playerName, GameMode oldMode, GameMode newMode) {

@@ -123,7 +123,7 @@ public class AutoHeal extends Module {
     private final Map<String, Long> serverResponseTimes = new ConcurrentHashMap<>();
 
     public AutoHeal() {
-        super(AddonTemplate.CATEGORY, "auto-heal", "Automatically heals player when health is low with smart cooldown management.");
+        super(AddonTemplate.CATEGORY, "auto-heal+", "Automatically heals player when health is low with smart cooldown management.");
     }
 
     @Override
@@ -141,7 +141,7 @@ public class AutoHeal extends Module {
 
         if (enableNotifications.get()) {
             double percentage = healthPercentage.get() * 100;
-            ChatUtils.info("Auto Heal activated! Health threshold: " + String.format("%.0f", percentage) + "%");
+            ChatUtils.info("Auto Heal+ activated! Health threshold: " + String.format("%.0f", percentage) + "%");
         }
     }
 
@@ -150,7 +150,7 @@ public class AutoHeal extends Module {
         isProcessing = false;
 
         if (enableNotifications.get()) {
-            ChatUtils.info("Auto Heal deactivated! Healed " + healCount + " times.");
+            ChatUtils.info("Auto Heal+ deactivated! Healed " + healCount + " times.");
         }
     }
 
@@ -247,7 +247,7 @@ public class AutoHeal extends Module {
                 float currentHealth = mc.player.getHealth();
                 float maxHealth = mc.player.getMaxHealth();
                 double percentage = (currentHealth / maxHealth) * 100;
-                ChatUtils.info("§c[AUTO HEAL] §fHealed! Health: §c" + String.format("%.1f", currentHealth) + "§f/" + String.format("%.1f", maxHealth) + " (" + String.format("%.0f", percentage) + "%)");
+                ChatUtils.info("§c[AUTO HEAL+] §fHealed! Health: §c" + String.format("%.1f", currentHealth) + "§f/" + String.format("%.1f", maxHealth) + " (" + String.format("%.0f", percentage) + "%)");
             }
 
         } catch (Exception e) {

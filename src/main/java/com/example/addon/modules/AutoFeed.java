@@ -123,7 +123,7 @@ public class AutoFeed extends Module {
     private final Map<String, Long> serverResponseTimes = new ConcurrentHashMap<>();
 
     public AutoFeed() {
-        super(AddonTemplate.CATEGORY, "auto-feed", "Automatically feeds player when hunger/health is low with smart cooldown management.");
+        super(AddonTemplate.CATEGORY, "auto-feed+", "Automatically feeds player when hunger/health is low with smart cooldown management.");
     }
 
     @Override
@@ -135,7 +135,7 @@ public class AutoFeed extends Module {
         failedFeedCount = 0;
 
         if (enableNotifications.get()) {
-            ChatUtils.info("Auto Feed activated! Threshold: " + hungerThreshold.get() + " hunger" +
+            ChatUtils.info("Auto Feed+ activated! Threshold: " + hungerThreshold.get() + " hunger" +
                 (checkSaturation.get() ? ", " + saturationThreshold.get() + " saturation" : "") +
                 " | Cooldown: " + (cooldown.get() == 0 ? "None" : cooldown.get() + "s"));
         }
@@ -146,7 +146,7 @@ public class AutoFeed extends Module {
         isProcessing = false;
 
         if (enableNotifications.get()) {
-            ChatUtils.info("Auto Feed deactivated! Fed " + feedCount + " times (" + failedFeedCount + " failed)");
+            ChatUtils.info("Auto Feed+ deactivated! Fed " + feedCount + " times (" + failedFeedCount + " failed)");
         }
     }
 
@@ -342,7 +342,7 @@ public class AutoFeed extends Module {
         serverResponseTimes.clear();
 
         if (enableNotifications.get()) {
-            ChatUtils.info("Auto Feed statistics have been reset!");
+            ChatUtils.info("Auto Feed+ statistics have been reset!");
         }
     }
 }
