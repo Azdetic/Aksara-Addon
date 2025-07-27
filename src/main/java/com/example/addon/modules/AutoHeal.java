@@ -27,9 +27,9 @@ public class AutoHeal extends Module {
 
     private final Setting<Integer> cooldown = sgGeneral.add(new IntSetting.Builder()
         .name("cooldown")
-        .description("Cooldown between heal commands in seconds (0 = no cooldown, 300 = 5 minutes)")
+        .description("Cooldown between heal commands in seconds (minimum 5 seconds for server safety)")
         .defaultValue(300)
-        .min(0)
+        .min(5) // Minimum 5 seconds to prevent spam disconnect
         .max(3600) // 1 hour max
         .sliderMax(600) // 10 minutes slider
         .build()
@@ -141,7 +141,7 @@ public class AutoHeal extends Module {
 
         if (enableNotifications.get()) {
             double percentage = healthPercentage.get() * 100;
-            ChatUtils.info("Auto Heal+ activated! Health threshold: " + String.format("%.0f", percentage) + "%");
+            ChatUtils.info("Auto Heal+ activated! Health threshold: " + String.format("%.0f", percentage) + "%%");
         }
     }
 
@@ -158,13 +158,17 @@ public class AutoHeal extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null || isProcessing) return;
 
-        // Update combat and damage tracking
-        updatePlayerStatus();
+        // Update combat and damage tracking (only every 5 ticks to reduce load)
+        if (mc.player.age % 5 == 0) {
+            updatePlayerStatus();
+        }
 
-        // Check if healing is needed
+        // Check if healing is needed (only every 20 ticks = 1 second)
+        if (mc.player.age % 20 != 0) return;
+
         if (!shouldHeal()) return;
 
-        // Execute heal
+        // Execute heal with additional safety check
         executeHeal();
     }
 
@@ -204,15 +208,20 @@ public class AutoHeal extends Module {
             }
         }
 
-        // Check cooldown (no more emergency mode)
-        long requiredCooldown = cooldown.get() * 1000L;
-        if (currentTime - lastHealTime < requiredCooldown) return false;
+        // CRITICAL: Always enforce minimum 5 second cooldown to prevent server disconnect
+        long minimumCooldown = Math.max(cooldown.get() * 1000L, 5000L); // At least 5 seconds
+        if (currentTime - lastHealTime < minimumCooldown) return false;
 
         // Check smart timing (combat)
         if (smartTiming.get()) {
             if (currentTime - lastCombatTime < combatCooldown.get() * 1000L) {
                 return false;
             }
+        }
+
+        // Additional safety: Don't heal if recently sent any command
+        if (currentTime - lastHealTime < 2000L) {
+            return false;
         }
 
         return true;
@@ -224,9 +233,35 @@ public class AutoHeal extends Module {
         isProcessing = true;
 
         try {
+            // Add minimum 1 second delay between any network commands for safety
+            long timeSinceLastCommand = System.currentTimeMillis() - lastHealTime;
+            if (timeSinceLastCommand < 1000) {
+                isProcessing = false;
+                return;
+            }
+
             // Send heal command
             String command = healCommand.get();
-            mc.player.networkHandler.sendChatCommand(command.startsWith("/") ? command.substring(1) : command);
+
+            // Additional safety: limit command length and validate
+            if (command.length() > 100) {
+                if (enableNotifications.get()) {
+                    ChatUtils.error("Heal command too long! Max 100 characters.");
+                }
+                isProcessing = false;
+                return;
+            }
+
+            // Send command with safety wrapper
+            try {
+                mc.player.networkHandler.sendChatCommand(command.startsWith("/") ? command.substring(1) : command);
+            } catch (Exception netException) {
+                if (enableNotifications.get()) {
+                    ChatUtils.error("Network error during heal: " + netException.getMessage());
+                }
+                isProcessing = false;
+                return;
+            }
 
             // Update statistics
             healCount++;
@@ -237,9 +272,13 @@ public class AutoHeal extends Module {
                 serverResponseTimes.put("last_heal", System.currentTimeMillis());
             }
 
-            // Play sound notification
+            // Play sound notification (with try-catch for safety)
             if (soundNotification.get()) {
-                mc.player.playSound(SoundEvents.ENTITY_PLAYER_LEVELUP, 0.3f, 1.5f);
+                try {
+                    mc.player.playSound(SoundEvents.ENTITY_PLAYER_LEVELUP, 0.3f, 1.5f);
+                } catch (Exception soundException) {
+                    // Ignore sound errors to prevent disconnect
+                }
             }
 
             // Show notification
@@ -247,7 +286,7 @@ public class AutoHeal extends Module {
                 float currentHealth = mc.player.getHealth();
                 float maxHealth = mc.player.getMaxHealth();
                 double percentage = (currentHealth / maxHealth) * 100;
-                ChatUtils.info("§c[AUTO HEAL+] §fHealed! Health: §c" + String.format("%.1f", currentHealth) + "§f/" + String.format("%.1f", maxHealth) + " (" + String.format("%.0f", percentage) + "%)");
+                ChatUtils.info("§c[AUTO HEAL+] §fHealed! Health: §c" + String.format("%.1f", currentHealth) + "§f/" + String.format("%.1f", maxHealth) + " (" + String.format("%.0f", percentage) + "%%)");
             }
 
         } catch (Exception e) {
@@ -296,7 +335,7 @@ public class AutoHeal extends Module {
         long timeUntilHeal = getTimeUntilNextHeal();
 
         if (percentage >= (healthPercentage.get() * 100)) {
-            return "§aHealthy (" + String.format("%.0f", percentage) + "%)";
+            return "§aHealthy (" + String.format("%.0f", percentage) + "%%)";
         } else if (timeUntilHeal > 0) {
             return "§eCooldown (" + (timeUntilHeal / 1000) + "s)";
         } else if (shouldHeal()) {
