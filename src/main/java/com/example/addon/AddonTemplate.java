@@ -12,7 +12,7 @@ import com.example.addon.modules.AutoFeed;
 import com.example.addon.modules.AutoHeal;
 import com.example.addon.modules.AutoDrop;
 import com.example.addon.modules.AntiStaff;
-import com.example.addon.modules.ServerSecurityMonitor;
+import com.example.addon.modules.AutoEatPlus;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -41,7 +41,7 @@ public class AddonTemplate extends MeteorAddon {
         Modules.get().add(new AutoHeal());
         Modules.get().add(new AutoDrop());
         Modules.get().add(new AntiStaff());
-        Modules.get().add(new ServerSecurityMonitor());
+        Modules.get().add(new AutoEatPlus());
 
         // Commands
         Commands.add(new CommandExample());
