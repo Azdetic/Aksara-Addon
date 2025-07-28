@@ -292,13 +292,26 @@ public class AutoEatPlus extends Module {
         }
 
         // Check if current slot still has food
-        if (mc.player.getInventory().getStack(slot).get(DataComponentTypes.FOOD) == null) {
-            int newSlot = findSlot();
-            if (newSlot == -1) {
-                stopEating();
-                return;
+        if (slot == SlotUtils.OFFHAND) {
+            // Check offhand for food
+            if (mc.player.getOffHandStack().get(DataComponentTypes.FOOD) == null) {
+                int newSlot = findSlot();
+                if (newSlot == -1) {
+                    stopEating();
+                    return;
+                }
+                slot = newSlot;
             }
-            changeSlot(newSlot);
+        } else {
+            // Check main inventory slot for food
+            if (mc.player.getInventory().getStack(slot).get(DataComponentTypes.FOOD) == null) {
+                int newSlot = findSlot();
+                if (newSlot == -1) {
+                    stopEating();
+                    return;
+                }
+                changeSlot(newSlot);
+            }
         }
 
         // Continue eating
@@ -325,11 +338,19 @@ public class AutoEatPlus extends Module {
     }
 
     private void eat() {
-        changeSlot(slot);
+        // Only change slot if not using offhand
+        if (slot != SlotUtils.OFFHAND) {
+            changeSlot(slot);
+        }
         setPressed(true);
 
         if (!mc.player.isUsingItem()) {
-            Utils.rightClick();
+            if (slot == SlotUtils.OFFHAND) {
+                // Use offhand specifically for eating
+                mc.interactionManager.interactItem(mc.player, Hand.OFF_HAND);
+            } else {
+                Utils.rightClick();
+            }
         }
 
         eating = true;
@@ -337,7 +358,9 @@ public class AutoEatPlus extends Module {
     }
 
     private void stopEating() {
-        if (prevSlot != SlotUtils.OFFHAND) changeSlot(prevSlot);
+        if (prevSlot != SlotUtils.OFFHAND && slot != SlotUtils.OFFHAND) {
+            changeSlot(prevSlot);
+        }
         setPressed(false);
         eating = false;
 
@@ -395,7 +418,13 @@ public class AutoEatPlus extends Module {
         slot = findSlot();
         if (slot == -1) return false;
 
-        FoodComponent food = mc.player.getInventory().getStack(slot).get(DataComponentTypes.FOOD);
+        FoodComponent food;
+        if (slot == SlotUtils.OFFHAND) {
+            food = mc.player.getOffHandStack().get(DataComponentTypes.FOOD);
+        } else {
+            food = mc.player.getInventory().getStack(slot).get(DataComponentTypes.FOOD);
+        }
+
         if (food == null) return false;
 
         return thresholdMode.get().test(healthLow, hungerLow)
@@ -419,11 +448,14 @@ public class AutoEatPlus extends Module {
             }
         }
 
-        // Check offhand
+        // Check offhand - prioritize it over main hand if it has same or better nutrition
         Item offHandItem = mc.player.getOffHandStack().getItem();
         FoodComponent offHandFood = offHandItem.getComponents().get(DataComponentTypes.FOOD);
-        if (offHandFood != null && !blacklist.get().contains(offHandItem) && offHandFood.nutrition() > bestHunger) {
-            slot = SlotUtils.OFFHAND;
+        if (offHandFood != null && !blacklist.get().contains(offHandItem)) {
+            int offhandHunger = offHandFood.nutrition();
+            if (offhandHunger >= bestHunger) { // >= to prefer offhand when nutrition is equal
+                slot = SlotUtils.OFFHAND;
+            }
         }
 
         return slot;
@@ -480,7 +512,8 @@ public class AutoEatPlus extends Module {
             }
 
             String combatIndicator = inCombat ? " [Combat]" : "";
-            return String.format("%.1f/%.1f%s", effectiveHealth, mc.player.getMaxHealth(), combatIndicator);
+            String handIndicator = (eating && slot == SlotUtils.OFFHAND) ? " [OH]" : "";
+            return String.format("%.1f/%.1f%s%s", effectiveHealth, mc.player.getMaxHealth(), combatIndicator, handIndicator);
         }
         return null;
     }
