@@ -2,6 +2,7 @@ package com.example.addon.modules;
 
 import com.example.addon.AddonTemplate;
 import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
@@ -13,6 +14,11 @@ import net.minecraft.item.Items;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.Identifier;
 import net.minecraft.registry.Registries;
+import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
+import net.minecraft.screen.GenericContainerScreenHandler;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.screen.slot.Slot;
+import net.minecraft.screen.ScreenHandler;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,6 +58,32 @@ public class AutoSell extends Module {
         .name("sound-notification")
         .description("Play sound when selling items")
         .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> chestAutoCollect = sgGeneral.add(new BoolSetting.Builder()
+        .name("chest-auto-collect")
+        .description("Automatically collect whitelisted items from opened chests (Optional - can be disabled)")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> bulkCollect = sgGeneral.add(new BoolSetting.Builder()
+        .name("bulk-collect")
+        .description("Collect all whitelisted items at once instead of one by one")
+        .defaultValue(false)
+        .visible(() -> chestAutoCollect.get())
+        .build()
+    );
+
+    private final Setting<Integer> chestDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("chest-delay")
+        .description("Delay between item movements from chest in milliseconds")
+        .defaultValue(100)
+        .min(50)
+        .max(1000)
+        .sliderMax(500)
+        .visible(() -> chestAutoCollect.get() && !bulkCollect.get())
         .build()
     );
 
@@ -126,9 +158,11 @@ public class AutoSell extends Module {
 
     // === INTERNAL VARIABLES ===
     private long lastSellTime = 0;
+    private long lastChestTime = 0;
     private final Map<Item, Integer> sellStats = new ConcurrentHashMap<>();
     private final Map<Item, Integer> currentInventoryCount = new ConcurrentHashMap<>();
     private boolean isProcessing = false;
+    private boolean isProcessingChest = false;
 
     public enum SellStrategy {
         SELL_ALL("Sell All"),
@@ -154,7 +188,9 @@ public class AutoSell extends Module {
     @Override
     public void onActivate() {
         lastSellTime = System.currentTimeMillis();
+        lastChestTime = System.currentTimeMillis();
         isProcessing = false;
+        isProcessingChest = false;
         updateInventoryCount();
 
         // Check if reset statistics is enabled
@@ -165,12 +201,16 @@ public class AutoSell extends Module {
 
         if (showStats.get()) {
             ChatUtils.info("Auto Sell activated! Monitoring " + whitelist.get().size() + " items.");
+            if (chestAutoCollect.get()) {
+                ChatUtils.info("Chest auto-collect enabled!");
+            }
         }
     }
 
     @Override
     public void onDeactivate() {
         isProcessing = false;
+        isProcessingChest = false;
         currentInventoryCount.clear();
 
         if (showStats.get()) {
@@ -197,6 +237,23 @@ public class AutoSell extends Module {
 
         // Execute sell
         executeSell(itemToSell);
+    }
+
+    @EventHandler
+    private void onScreenOpen(OpenScreenEvent event) {
+        if (!chestAutoCollect.get() || isProcessingChest) return;
+
+        if (event.screen instanceof GenericContainerScreen) {
+            // Schedule chest processing with a slight delay to ensure GUI is fully loaded
+            new Thread(() -> {
+                try {
+                    Thread.sleep(200); // Small delay to ensure chest is fully loaded
+                    processChestItems();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }).start();
+        }
     }
 
     private void updateInventoryCount() {
@@ -242,6 +299,211 @@ public class AutoSell extends Module {
         }
 
         return null;
+    }
+
+    private void processChestItems() {
+        if (mc.player == null || mc.currentScreen == null || isProcessingChest) return;
+
+        if (!(mc.currentScreen instanceof GenericContainerScreen containerScreen)) return;
+
+        isProcessingChest = true;
+
+        try {
+            GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
+
+            // Get chest size more accurately
+            // Container inventory size includes player inventory (36 slots)
+            // So actual chest size = total - 36
+            int totalSlots = handler.slots.size();
+            int chestSize = totalSlots - 36; // Player inventory is always 36 slots
+
+            // Make sure we don't go beyond chest slots
+            if (chestSize <= 0) {
+                if (showStats.get()) {
+                    ChatUtils.error("Could not determine chest size properly");
+                }
+                return;
+            }
+
+            if (showStats.get()) {
+                ChatUtils.info("Processing chest with " + chestSize + " slots, checking for whitelisted items...");
+                if (bulkCollect.get()) {
+                    ChatUtils.info("Bulk collect mode: collecting all items at once");
+                } else {
+                    ChatUtils.info("Sequential mode: collecting items one by one");
+                }
+            }
+
+            if (bulkCollect.get()) {
+                processBulkCollect(handler);
+            } else {
+                processSequentialCollect(handler);
+            }
+        } catch (Exception e) {
+            if (showStats.get()) {
+                ChatUtils.error("Error processing chest: " + e.getMessage());
+            }
+        } finally {
+            isProcessingChest = false;
+        }
+    }
+
+    private void processBulkCollect(ScreenHandler handler) {
+        List<Integer> chestSlots = new ArrayList<>();
+
+        // Collect all slots that have items to be collected
+        for (int i = 0; i < handler.slots.size() - 36; i++) {
+            Slot slot = handler.slots.get(i);
+            if (slot.hasStack()) {
+                ItemStack stack = slot.getStack();
+                if (hasSpaceForItem(stack.getItem(), stack.getCount())) {
+                    chestSlots.add(i);
+                }
+            }
+        }
+
+        // Move all items at once
+        for (int slotIndex : chestSlots) {
+            try {
+                moveItemFromChest(slotIndex, (GenericContainerScreenHandler) handler);
+            } catch (Exception e) {
+                if (showStats.get()) {
+                    ChatUtils.error("Error moving item from slot " + slotIndex + ": " + e.getMessage());
+                }
+            }
+        }
+
+        if (showStats.get() && !chestSlots.isEmpty()) {
+            ChatUtils.info("Bulk collected " + chestSlots.size() + " item stacks from chest");
+        }
+    }
+
+    private void processSequentialCollect(ScreenHandler handler) {
+        for (int i = 0; i < handler.slots.size() - 36; i++) {
+            Slot slot = handler.slots.get(i);
+            if (slot.hasStack()) {
+                ItemStack stack = slot.getStack();
+                if (hasSpaceForItem(stack.getItem(), stack.getCount())) {
+                    try {
+                        moveItemFromChest(i, (GenericContainerScreenHandler) handler);
+
+                        if (showStats.get()) {
+                            ChatUtils.info("Collected " + stack.getName().getString() + " x" + stack.getCount());
+                        }
+
+                        // Add delay for sequential collection
+                        try {
+                            Thread.sleep(chestDelay.get());
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    } catch (Exception e) {
+                        if (showStats.get()) {
+                            ChatUtils.error("Error collecting item: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        }
+    }    private boolean hasEmptySlot() {
+        if (mc.player == null) return false;
+
+        int emptySlots = 0;
+
+        // Check hotbar (slots 0-8)
+        for (int i = 0; i < 9; i++) {
+            if (mc.player.getInventory().getStack(i).isEmpty()) {
+                emptySlots++;
+            }
+        }
+
+        // Check main inventory (slots 9-35)
+        for (int i = 9; i < 36; i++) {
+            if (mc.player.getInventory().getStack(i).isEmpty()) {
+                emptySlots++;
+            }
+        }
+
+        // Debug info
+        if (showStats.get() && emptySlots > 0) {
+            ChatUtils.info("Found " + emptySlots + " empty slots in inventory");
+        }
+
+        return emptySlots > 0;
+    }
+
+    private boolean hasSpaceForItem(Item item, int count) {
+        if (mc.player == null) return false;
+
+        int remainingCount = count;
+
+        // First, try to add to existing stacks of the same item
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (!stack.isEmpty() && stack.getItem() == item) {
+                int maxStackSize = stack.getMaxCount();
+                int canAdd = maxStackSize - stack.getCount();
+                if (canAdd > 0) {
+                    remainingCount -= Math.min(canAdd, remainingCount);
+                    if (remainingCount <= 0) {
+                        if (showStats.get()) {
+                            ChatUtils.info("Can stack " + count + "x " + getItemDisplayName(item) + " with existing items");
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Then, check for empty slots for remaining items
+        int emptySlots = 0;
+        for (int i = 0; i < 36; i++) {
+            if (mc.player.getInventory().getStack(i).isEmpty()) {
+                emptySlots++;
+                remainingCount -= item.getDefaultStack().getMaxCount();
+                if (remainingCount <= 0) {
+                    if (showStats.get()) {
+                        ChatUtils.info("Can fit " + count + "x " + getItemDisplayName(item) + " in empty slots");
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if (showStats.get()) {
+            ChatUtils.info("No space for " + count + "x " + getItemDisplayName(item) + " (need " + remainingCount + " more space)");
+        }
+
+        return false;
+    }
+
+    private void moveItemFromChest(int chestSlot, GenericContainerScreenHandler handler) {
+        if (mc.player == null || mc.interactionManager == null) return;
+
+        try {
+            // Shift-click to move item to inventory
+            mc.interactionManager.clickSlot(
+                handler.syncId,
+                chestSlot,
+                0,
+                SlotActionType.QUICK_MOVE,
+                mc.player
+            );
+        } catch (Exception e) {
+            // Fallback: try regular click
+            try {
+                mc.interactionManager.clickSlot(
+                    handler.syncId,
+                    chestSlot,
+                    0,
+                    SlotActionType.PICKUP,
+                    mc.player
+                );
+            } catch (Exception ignored) {
+                // Silent fail
+            }
+        }
     }
 
     private void executeSell(Item item) {
@@ -352,6 +614,18 @@ public class AutoSell extends Module {
 
     public boolean isCurrentlyProcessing() {
         return isProcessing;
+    }
+
+    public boolean isCurrentlyProcessingChest() {
+        return isProcessingChest;
+    }
+
+    public boolean isChestAutoCollectEnabled() {
+        return chestAutoCollect.get();
+    }
+
+    public void setChestAutoCollect(boolean enabled) {
+        chestAutoCollect.set(enabled);
     }
 
     // Getter and setter for GUI access
