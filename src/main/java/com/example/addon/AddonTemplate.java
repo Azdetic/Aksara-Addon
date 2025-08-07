@@ -13,7 +13,7 @@ import com.example.addon.modules.AutoHeal;
 import com.example.addon.modules.AutoDrop;
 import com.example.addon.modules.AntiStaff;
 import com.example.addon.modules.AutoEatPlus;
-import com.example.addon.modules.AutoSaver;
+import com.example.addon.modules.AutoBuy;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -43,7 +43,7 @@ public class AddonTemplate extends MeteorAddon {
         Modules.get().add(new AutoDrop());
         Modules.get().add(new AntiStaff());
         Modules.get().add(new AutoEatPlus());
-        Modules.get().add(new AutoSaver());
+        Modules.get().add(new AutoBuy());
 
         // Commands
         Commands.add(new CommandExample());

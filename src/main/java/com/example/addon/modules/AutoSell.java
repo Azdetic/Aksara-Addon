@@ -76,6 +76,14 @@ public class AutoSell extends Module {
         .build()
     );
 
+    private final Setting<Boolean> continuousCollect = sgGeneral.add(new BoolSetting.Builder()
+        .name("continuous-collect")
+        .description("Keep collecting from chest while it's open and has whitelist items (solves empty inventory after sell)")
+        .defaultValue(true)
+        .visible(() -> chestAutoCollect.get())
+        .build()
+    );
+
     private final Setting<Integer> chestDelay = sgGeneral.add(new IntSetting.Builder()
         .name("chest-delay")
         .description("Delay between item movements from chest in milliseconds")
@@ -84,6 +92,17 @@ public class AutoSell extends Module {
         .max(1000)
         .sliderMax(500)
         .visible(() -> chestAutoCollect.get() && !bulkCollect.get())
+        .build()
+    );
+
+    private final Setting<Integer> continuousDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("continuous-delay")
+        .description("Delay between continuous collection cycles in milliseconds")
+        .defaultValue(500)
+        .min(200)
+        .max(2000)
+        .sliderMax(1000)
+        .visible(() -> chestAutoCollect.get() && continuousCollect.get())
         .build()
     );
 
@@ -159,6 +178,7 @@ public class AutoSell extends Module {
     // === INTERNAL VARIABLES ===
     private long lastSellTime = 0;
     private long lastChestTime = 0;
+    private long lastContinuousTime = 0;
     private final Map<Item, Integer> sellStats = new ConcurrentHashMap<>();
     private final Map<Item, Integer> currentInventoryCount = new ConcurrentHashMap<>();
     private boolean isProcessing = false;
@@ -189,6 +209,7 @@ public class AutoSell extends Module {
     public void onActivate() {
         lastSellTime = System.currentTimeMillis();
         lastChestTime = System.currentTimeMillis();
+        lastContinuousTime = System.currentTimeMillis();
         isProcessing = false;
         isProcessingChest = false;
         updateInventoryCount();
@@ -203,6 +224,9 @@ public class AutoSell extends Module {
             ChatUtils.info("Auto Sell activated! Monitoring " + whitelist.get().size() + " items.");
             if (chestAutoCollect.get()) {
                 ChatUtils.info("Chest auto-collect enabled!");
+                if (continuousCollect.get()) {
+                    ChatUtils.info("Continuous collection enabled - will refill inventory after sell!");
+                }
             }
         }
     }
@@ -220,7 +244,37 @@ public class AutoSell extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
-        if (mc.player == null || mc.world == null || isProcessing) return;
+        if (mc.player == null || mc.world == null) return;
+
+        // === CONTINUOUS CHEST COLLECTION ===
+        // Check if we should continue collecting from an open chest
+        if (continuousCollect.get() && chestAutoCollect.get() &&
+            mc.currentScreen instanceof GenericContainerScreen &&
+            !isProcessingChest &&
+            System.currentTimeMillis() - lastContinuousTime >= continuousDelay.get()) {
+
+            // Check if chest still has whitelisted items and we have space
+            if (hasWhitelistedItemsInChest() && hasInventorySpace()) {
+                lastContinuousTime = System.currentTimeMillis();
+
+                // Process chest items again
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(100); // Small delay
+                        processChestItems();
+
+                        if (showStats.get()) {
+                            ChatUtils.info("Continuous collection: refilling inventory from chest");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }).start();
+            }
+        }
+
+        // === NORMAL SELL PROCESSING ===
+        if (isProcessing) return;
 
         // Check delay
         if (System.currentTimeMillis() - lastSellTime < delay.get()) return;
@@ -349,46 +403,92 @@ public class AutoSell extends Module {
     }
 
     private void processBulkCollect(ScreenHandler handler) {
-        List<Integer> chestSlots = new ArrayList<>();
+        if (showStats.get()) {
+            ChatUtils.info("Starting BULK collection - processing all items simultaneously...");
+        }
 
-        // Collect all slots that have items to be collected
+        List<Integer> allWhitelistedSlots = new ArrayList<>();
+
+        // First pass: Identify ALL whitelisted items in chest
         for (int i = 0; i < handler.slots.size() - 36; i++) {
             Slot slot = handler.slots.get(i);
             if (slot.hasStack()) {
                 ItemStack stack = slot.getStack();
-                if (hasSpaceForItem(stack.getItem(), stack.getCount())) {
-                    chestSlots.add(i);
+                Item item = stack.getItem();
+
+                // STRICT WHITELIST CHECK
+                if (whitelist.get().contains(item) && hasSpaceForItem(item, stack.getCount())) {
+                    allWhitelistedSlots.add(i);
                 }
             }
         }
 
-        // Move all items at once
-        for (int slotIndex : chestSlots) {
+        if (allWhitelistedSlots.isEmpty()) {
+            if (showStats.get()) {
+                ChatUtils.info("No whitelisted items found in chest");
+            }
+            return;
+        }
+
+        if (showStats.get()) {
+            ChatUtils.info("Found " + allWhitelistedSlots.size() + " whitelisted item stacks - collecting ALL simultaneously!");
+        }
+
+        // BULK MOVE: Process all items at once without delays
+        int totalCollected = 0;
+        for (int slotIndex : allWhitelistedSlots) {
             try {
-                moveItemFromChest(slotIndex, (GenericContainerScreenHandler) handler);
+                Slot slot = handler.slots.get(slotIndex);
+                if (slot.hasStack()) {
+                    ItemStack stack = slot.getStack();
+                    Item item = stack.getItem();
+
+                    // Final whitelist verification
+                    if (whitelist.get().contains(item)) {
+                        moveItemFromChest(slotIndex, (GenericContainerScreenHandler) handler);
+                        totalCollected++;
+
+                        if (showStats.get()) {
+                            ChatUtils.info("→ Bulk moved: " + stack.getName().getString() + " x" + stack.getCount());
+                        }
+                    }
+                }
             } catch (Exception e) {
                 if (showStats.get()) {
-                    ChatUtils.error("Error moving item from slot " + slotIndex + ": " + e.getMessage());
+                    ChatUtils.error("Error in bulk move from slot " + slotIndex + ": " + e.getMessage());
                 }
             }
         }
 
-        if (showStats.get() && !chestSlots.isEmpty()) {
-            ChatUtils.info("Bulk collected " + chestSlots.size() + " item stacks from chest");
+        // Single delay at the end to allow all moves to complete
+        try {
+            Thread.sleep(200); // One delay for all operations
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        if (showStats.get()) {
+            ChatUtils.info("✓ BULK COMPLETE: Collected " + totalCollected + " whitelisted item stacks in one operation!");
         }
     }
 
     private void processSequentialCollect(ScreenHandler handler) {
+        int totalCollected = 0;
+
         for (int i = 0; i < handler.slots.size() - 36; i++) {
             Slot slot = handler.slots.get(i);
             if (slot.hasStack()) {
                 ItemStack stack = slot.getStack();
-                if (hasSpaceForItem(stack.getItem(), stack.getCount())) {
+                Item item = stack.getItem();
+
+                // STRICT WHITELIST CHECK - Only collect whitelisted items
+                if (whitelist.get().contains(item) && hasSpaceForItem(item, stack.getCount())) {
                     try {
                         moveItemFromChest(i, (GenericContainerScreenHandler) handler);
+                        totalCollected++;
 
                         if (showStats.get()) {
-                            ChatUtils.info("Collected " + stack.getName().getString() + " x" + stack.getCount());
+                            ChatUtils.info("Collected " + stack.getName().getString() + " x" + stack.getCount() + " (whitelisted)");
                         }
 
                         // Add delay for sequential collection
@@ -403,38 +503,88 @@ public class AutoSell extends Module {
                             ChatUtils.error("Error collecting item: " + e.getMessage());
                         }
                     }
+                } else if (showStats.get() && !whitelist.get().contains(item)) {
+                    // Debug: Show items that were skipped due to whitelist
+                    ChatUtils.info("Skipped " + getItemDisplayName(item) + " - not in whitelist");
                 }
             }
         }
-    }    private boolean hasEmptySlot() {
+
+        if (showStats.get() && totalCollected > 0) {
+            ChatUtils.info("Sequential collected " + totalCollected + " whitelisted items from chest");
+        }
+    }    private boolean hasInventorySpace() {
         if (mc.player == null) return false;
 
-        int emptySlots = 0;
-
-        // Check hotbar (slots 0-8)
-        for (int i = 0; i < 9; i++) {
+        // Check for any empty slot in inventory
+        for (int i = 0; i < 36; i++) {
             if (mc.player.getInventory().getStack(i).isEmpty()) {
-                emptySlots++;
+                return true;
             }
         }
 
-        // Check main inventory (slots 9-35)
-        for (int i = 9; i < 36; i++) {
-            if (mc.player.getInventory().getStack(i).isEmpty()) {
-                emptySlots++;
+        // Also check if any existing stacks can be combined
+        if (mc.currentScreen instanceof GenericContainerScreen containerScreen) {
+            GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
+
+            for (int i = 0; i < handler.slots.size() - 36; i++) {
+                Slot slot = handler.slots.get(i);
+                if (slot.hasStack()) {
+                    ItemStack chestStack = slot.getStack();
+                    Item item = chestStack.getItem();
+
+                    if (whitelist.get().contains(item)) {
+                        // Check if we can stack with existing items
+                        for (int j = 0; j < 36; j++) {
+                            ItemStack invStack = mc.player.getInventory().getStack(j);
+                            if (!invStack.isEmpty() && invStack.getItem() == item) {
+                                int maxStack = invStack.getMaxCount();
+                                if (invStack.getCount() < maxStack) {
+                                    return true; // Can stack with existing
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Debug info
-        if (showStats.get() && emptySlots > 0) {
-            ChatUtils.info("Found " + emptySlots + " empty slots in inventory");
+        return false;
+    }
+
+    private boolean hasWhitelistedItemsInChest() {
+        if (mc.player == null || mc.currentScreen == null) return false;
+
+        if (!(mc.currentScreen instanceof GenericContainerScreen containerScreen)) return false;
+
+        GenericContainerScreenHandler handler = containerScreen.getScreenHandler();
+
+        // Check if chest still contains any whitelisted items
+        for (int i = 0; i < handler.slots.size() - 36; i++) {
+            Slot slot = handler.slots.get(i);
+            if (slot.hasStack()) {
+                ItemStack stack = slot.getStack();
+                Item item = stack.getItem();
+
+                if (whitelist.get().contains(item)) {
+                    return true; // Found at least one whitelisted item
+                }
+            }
         }
 
-        return emptySlots > 0;
+        return false;
     }
 
     private boolean hasSpaceForItem(Item item, int count) {
         if (mc.player == null) return false;
+
+        // WHITELIST CHECK FIRST - Very important!
+        if (!whitelist.get().contains(item)) {
+            if (showStats.get()) {
+                ChatUtils.info("Item " + getItemDisplayName(item) + " not in whitelist - skipping");
+            }
+            return false;
+        }
 
         int remainingCount = count;
 
