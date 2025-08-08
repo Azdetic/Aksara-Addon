@@ -30,7 +30,7 @@ public class AutoBuy extends Module {
     private final Setting<List<String>> slotList = sgSlots.add(new StringListSetting.Builder()
         .name("Slot Configuration")
         .description("Slot numbers to click. Auto-detects chest type: Single Chest (0-26), Double Chest (0-53). Click + to add slots.")
-        .defaultValue(List.of("0", "1", "2"))
+        .defaultValue(List.of("28", "37", "38"))
         .build()
     );
 
@@ -62,6 +62,24 @@ public class AutoBuy extends Module {
         .build()
     );
 
+    private final Setting<Boolean> repeatMode = sgTiming.add(new BoolSetting.Builder()
+        .name("Repeat Mode")
+        .description("Keep repeating the buying process instead of running only once")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> repeatDelay = sgTiming.add(new IntSetting.Builder()
+        .name("Repeat Delay")
+        .description("Delay between repeat cycles (in seconds)")
+        .defaultValue(10)
+        .min(1)
+        .max(300)
+        .sliderMax(60)
+        .visible(() -> repeatMode.get())
+        .build()
+    );
+
     // Internal state and slot storage
     private boolean waitingForGui = false;
     private boolean isProcessing = false;
@@ -69,6 +87,8 @@ public class AutoBuy extends Module {
     private int tickCounter = 0;
     private int currentPhase = 0;
     private int maxSafeSlot = 26; // Default to single chest, will be updated on GUI detection
+    private long lastRepeatTime = 0;
+    private boolean completedOneCycle = false;
 
     public AutoBuy() {
         super(AddonTemplate.CATEGORY, "auto-buy", "Automatically buy items from shop with dynamic slot configuration");
@@ -88,11 +108,19 @@ public class AutoBuy extends Module {
         tickCounter = 0;
         waitingForGui = false;
         isProcessing = false;
+        lastRepeatTime = 0;
+        completedOneCycle = false;
 
         // Execute shop command
         executeShopCommand();
         ChatUtils.info("AutoBuy started - executing: " + shopCommand.get());
         ChatUtils.info("Will click " + validSlots.size() + " slots: " + getSlotListString());
+
+        if (repeatMode.get()) {
+            ChatUtils.info("Repeat Mode enabled - will repeat every " + repeatDelay.get() + " seconds");
+        } else {
+            ChatUtils.info("Single Mode - will run once and disable");
+        }
     }    @Override
     public void onDeactivate() {
         waitingForGui = false;
@@ -100,6 +128,8 @@ public class AutoBuy extends Module {
         currentSlotIndex = 0;
         currentPhase = 0;
         tickCounter = 0;
+        lastRepeatTime = 0;
+        completedOneCycle = false;
     }
 
     @EventHandler
@@ -107,7 +137,33 @@ public class AutoBuy extends Module {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player == null || mc.world == null) return;
 
-        // Main auto buy logic
+        // === REPEAT MODE LOGIC ===
+        // Check if we completed one cycle and should repeat or disable
+        if (completedOneCycle) {
+            if (repeatMode.get()) {
+                // Check if enough time has passed for next repeat
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastRepeatTime >= repeatDelay.get() * 1000) {
+                    // Reset for next cycle
+                    completedOneCycle = false;
+                    isProcessing = false;
+                    waitingForGui = false;
+                    currentPhase = 0;
+                    tickCounter = 0;
+                    currentSlotIndex = 0;
+
+                    // Start new cycle
+                    executeShopCommand();
+                    ChatUtils.info("Repeat Mode: Starting new cycle");
+                    return; // Important: return here to prevent processing in same tick
+                }
+            } else {
+                // Single mode - disable after completion
+                ChatUtils.info("Single Mode: Completed one cycle, disabling AutoBuy");
+                toggle();
+                return;
+            }
+        }        // === MAIN AUTO BUY LOGIC ===
         if (isActive() && isProcessing) {
             tickCounter++;
             handleAutoBuyProcess(mc);
@@ -122,20 +178,24 @@ public class AutoBuy extends Module {
             GenericContainerScreen containerScreen = (GenericContainerScreen) event.screen;
             String title = containerScreen.getTitle().getString().toLowerCase();
 
-            // Check if this looks like a shop GUI
-            if (title.contains("shop") || title.contains("store") || title.contains("buy") ||
-                title.contains("market") || title.contains("chest")) {
+            ChatUtils.info("DEBUG: Detected GUI with title: '" + containerScreen.getTitle().getString() + "'");
 
-                // Auto-detect chest type and set safe slot range
+            // Check if this looks like a shop GUI - MUCH MORE PERMISSIVE
+            if (title.contains("shop") || title.contains("store") || title.contains("buy") ||
+                title.contains("market") || title.contains("chest") || title.contains("gui") ||
+                title.contains("trading") || title.contains("sell") || title.length() == 0 ||
+                title.contains("container") || !title.isEmpty()) {
+
+                // Auto-detect chest type for information purposes only
                 int totalSlots = containerScreen.getScreenHandler().slots.size();
                 if (totalSlots <= 54) {
                     // Single chest: 27 chest slots + 27 inventory = 54 total
-                    maxSafeSlot = 26; // Slots 0-26 are safe (chest area)
-                    ChatUtils.info("Detected Single Chest - Safe slots: 0-26");
+                    maxSafeSlot = 26; // Slots 0-26 are chest area
+                    ChatUtils.info("Detected Single Chest - " + totalSlots + " total slots (0-26 = chest area)");
                 } else {
                     // Double chest: 54 chest slots + 27 inventory = 81 total
-                    maxSafeSlot = 53; // Slots 0-53 are safe (chest area)
-                    ChatUtils.info("Detected Double Chest - Safe slots: 0-53");
+                    maxSafeSlot = 53; // Slots 0-53 are chest area
+                    ChatUtils.info("Detected Double Chest - " + totalSlots + " total slots (0-53 = chest area)");
                 }
 
                 waitingForGui = false;
@@ -143,8 +203,12 @@ public class AutoBuy extends Module {
                 currentPhase = 1;
                 tickCounter = 0;
 
+                List<Integer> validSlots = getValidSlots();
                 ChatUtils.info("Shop GUI detected: " + containerScreen.getTitle().getString());
-                ChatUtils.info("GUI has " + totalSlots + " slots total, using slots 0-" + maxSafeSlot + " for items");
+                ChatUtils.info("GUI has " + totalSlots + " slots total");
+                ChatUtils.info("Will click " + validSlots.size() + " configured slots: " + getSlotListString());
+            } else {
+                ChatUtils.warning("GUI detected but not recognized as shop: '" + title + "' - add keywords if needed");
             }
         }
     }
@@ -260,10 +324,18 @@ public class AutoBuy extends Module {
         currentPhase = 0;
         tickCounter = 0;
         currentSlotIndex = 0;
+        completedOneCycle = true; // Mark that one cycle is completed
+        lastRepeatTime = System.currentTimeMillis(); // Record completion time
 
         List<Integer> validSlots = getValidSlots();
-        ChatUtils.info("AutoBuy completed! Clicked " + validSlots.size() + " slots");
-        toggle();
+        ChatUtils.info("AutoBuy cycle completed! Clicked " + validSlots.size() + " slots");
+
+        // Don't toggle here - let onTick handle repeat logic
+        if (!repeatMode.get()) {
+            ChatUtils.info("Single Mode: One cycle completed, will disable in next tick");
+        } else {
+            ChatUtils.info("Repeat Mode: Waiting " + repeatDelay.get() + " seconds for next cycle");
+        }
     }
 
     private List<Integer> getValidSlots() {
@@ -271,8 +343,8 @@ public class AutoBuy extends Module {
         for (String slotStr : slotList.get()) {
             try {
                 int slot = Integer.parseInt(slotStr.trim());
-                // Use dynamic maxSafeSlot based on detected chest type
-                if (slot >= 0 && slot <= maxSafeSlot) {
+                // Accept any reasonable slot number (0-80 to cover double chest + inventory)
+                if (slot >= 0 && slot <= 80) {
                     validSlots.add(slot);
                 }
             } catch (NumberFormatException e) {

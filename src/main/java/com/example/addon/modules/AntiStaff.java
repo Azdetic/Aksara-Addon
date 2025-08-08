@@ -4,10 +4,12 @@ import com.example.addon.AddonTemplate;
 import meteordevelopment.meteorclient.events.game.ReceiveMessageEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.network.packet.c2s.play.RequestCommandCompletionsC2SPacket;
 import net.minecraft.network.packet.s2c.play.CommandSuggestionsS2CPacket;
@@ -20,10 +22,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class AntiStaff extends Module {
-    private final SettingGroup sgGeneral = this.settings.getDefaultGroup();
-    private final SettingGroup sgDetection = this.settings.createGroup("Detection");
-    private final SettingGroup sgActions = this.settings.createGroup("Actions");
-    private final SettingGroup sgPlayers = this.settings.createGroup("Players");
+    private final SettingGroup sgGeneral = settings.getDefaultGroup();
+    private final SettingGroup sgDetection = settings.createGroup("Detection");
+    private final SettingGroup sgActions = settings.createGroup("Actions");
+    private final SettingGroup sgPlayers = settings.createGroup("Players");
 
     // General Settings
     private final Setting<Boolean> enableVanishDetection = sgGeneral.add(new BoolSetting.Builder()
@@ -179,6 +181,14 @@ public class AntiStaff extends Module {
         .build()
     );
 
+    private final Setting<Boolean> autoDisableAfterDisconnect = sgActions.add(new BoolSetting.Builder()
+        .name("auto-disable-after-disconnect")
+        .description("Automatically disable Anti-Staff after disconnecting to avoid reconnection issues")
+        .defaultValue(true)
+        .visible(() -> actionType.get() == ActionType.DISCONNECT)
+        .build()
+    );
+
     private final Setting<Boolean> showNotifications = sgActions.add(new BoolSetting.Builder()
         .name("show-notifications")
         .description("Show notifications when staff is detected.")
@@ -214,6 +224,7 @@ public class AntiStaff extends Module {
     private final Map<String, Long> lastDetectionTime = new ConcurrentHashMap<>();
     private final Set<String> detectedStaff = new HashSet<>();
     private ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private boolean disconnectedByAntiStaff = false; // Track if we triggered the disconnect
 
     // Command completion vanish detection (most accurate)
     private final List<Integer> completionIDs = new ArrayList<>();
@@ -240,6 +251,7 @@ public class AntiStaff extends Module {
         playerStates.clear();
         lastDetectionTime.clear();
         detectedStaff.clear();
+        disconnectedByAntiStaff = false; // Reset disconnect flag
 
         if (scheduler == null || scheduler.isShutdown()) {
             scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -247,6 +259,9 @@ public class AntiStaff extends Module {
 
         if (showNotifications.get()) {
             ChatUtils.info("Anti-Staff activated - Monitoring staff activity...");
+            if (autoDisableAfterDisconnect.get()) {
+                ChatUtils.info("Auto-disable after disconnect: ENABLED - Module will turn off after disconnecting");
+            }
         }
     }
 
@@ -264,6 +279,17 @@ public class AntiStaff extends Module {
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
+
+        // Check if we disconnected and should auto-disable
+        if (disconnectedByAntiStaff && autoDisableAfterDisconnect.get()) {
+            // Reset flag and disable module
+            disconnectedByAntiStaff = false;
+            if (isActive()) {
+                ChatUtils.info("Anti-Staff: Auto-disabling after disconnect to prevent reconnection issues");
+                toggle();
+                return;
+            }
+        }
 
         // Limit tick frequency to avoid performance issues
         long currentTime = System.currentTimeMillis();
@@ -289,6 +315,24 @@ public class AntiStaff extends Module {
         // Check for join/leave messages to detect staff
         if (enableStaffAutoDetect.get()) {
             checkJoinLeaveMessages(message);
+        }
+    }
+
+    @EventHandler
+    private void onGameLeft(GameLeftEvent event) {
+        if (autoDisableAfterDisconnect.get() && disconnectedByAntiStaff) {
+            // Wait a short moment then disable the module
+            new Thread(() -> {
+                try {
+                    Thread.sleep(500); // Give the client time to properly disconnect
+                    if (isActive()) {
+                        ChatUtils.info("Anti-Staff: Auto-disabling after disconnect to allow reconnection");
+                        toggle();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }).start();
         }
     }
 
