@@ -80,9 +80,27 @@ public class AutoBuy extends Module {
         .build()
     );
 
+    private final Setting<Integer> closeDelay = sgTiming.add(new IntSetting.Builder()
+        .name("Close Delay")
+        .description("Delay before closing GUI after completing all clicks (ticks)")
+        .defaultValue(10)
+        .min(0)
+        .max(60)
+        .sliderMax(60)
+        .build()
+    );
+
+    private final Setting<Boolean> autoCloseGui = sgTiming.add(new BoolSetting.Builder()
+        .name("Auto Close GUI")
+        .description("Automatically close shop GUI after completing all slot clicks")
+        .defaultValue(true)
+        .build()
+    );
+
     // Internal state and slot storage
     private boolean waitingForGui = false;
     private boolean isProcessing = false;
+    private boolean waitingToClose = false;
     private int currentSlotIndex = 0;
     private int tickCounter = 0;
     private int currentPhase = 0;
@@ -125,6 +143,7 @@ public class AutoBuy extends Module {
     public void onDeactivate() {
         waitingForGui = false;
         isProcessing = false;
+        waitingToClose = false;
         currentSlotIndex = 0;
         currentPhase = 0;
         tickCounter = 0;
@@ -148,6 +167,7 @@ public class AutoBuy extends Module {
                     completedOneCycle = false;
                     isProcessing = false;
                     waitingForGui = false;
+                    waitingToClose = false;
                     currentPhase = 0;
                     tickCounter = 0;
                     currentSlotIndex = 0;
@@ -240,7 +260,15 @@ public class AutoBuy extends Module {
                     if (bulkMode.get()) {
                         ChatUtils.info("Starting BULK clicking " + validSlots.size() + " slots simultaneously...");
                         processBulkClicks(mc, validSlots);
-                        finishProcess();
+                        // Start close delay phase if auto close is enabled
+                        if (autoCloseGui.get()) {
+                            currentPhase = 3;
+                            tickCounter = 0;
+                            waitingToClose = true;
+                            ChatUtils.info("Starting close delay (" + closeDelay.get() + " ticks)...");
+                        } else {
+                            finishProcess();
+                        }
                     } else {
                         ChatUtils.info("Starting sequential clicking " + validSlots.size() + " slots...");
                     }
@@ -254,8 +282,24 @@ public class AutoBuy extends Module {
                         currentSlotIndex++;
                         tickCounter = 0;
                     } else {
-                        finishProcess();
+                        // Start close delay phase if auto close is enabled
+                        if (autoCloseGui.get()) {
+                            currentPhase = 3;
+                            tickCounter = 0;
+                            waitingToClose = true;
+                            ChatUtils.info("Starting close delay (" + closeDelay.get() + " ticks)...");
+                        } else {
+                            finishProcess();
+                        }
                     }
+                }
+                break;
+
+            case 3: // Waiting for close delay before closing GUI
+                if (tickCounter >= closeDelay.get()) {
+                    closeShopGui();
+                    waitingToClose = false;
+                    finishProcess();
                 }
                 break;
         }
@@ -321,6 +365,7 @@ public class AutoBuy extends Module {
     private void finishProcess() {
         isProcessing = false;
         waitingForGui = false;
+        waitingToClose = false;
         currentPhase = 0;
         tickCounter = 0;
         currentSlotIndex = 0;
@@ -360,6 +405,19 @@ public class AutoBuy extends Module {
             return "None";
         }
         return validSlots.toString().replace("[", "").replace("]", "");
+    }
+
+    private void closeShopGui() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.currentScreen != null) {
+            try {
+                // Close the current screen/GUI
+                mc.setScreen(null);
+                ChatUtils.info("✓ Shop GUI closed automatically after completing all clicks");
+            } catch (Exception e) {
+                ChatUtils.warning("Failed to close GUI: " + e.getMessage());
+            }
+        }
     }
 
     public String getInfo() {
