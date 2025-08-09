@@ -144,7 +144,7 @@ public class BowSpamPlus extends Module {
     private Entity lastTargetedEntity = null;
 
     public BowSpamPlus() {
-        super(AddonTemplate.CATEGORY, "bow-spam-plus", "Advanced bow spam with auto-targeting and entity detection");
+        super(AddonTemplate.CATEGORY, "bow-spam+", "Advanced bow spam with auto-targeting and entity detection");
     }
 
     @Override

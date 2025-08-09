@@ -353,7 +353,7 @@ public class AutoFarmPlus extends Module {
     private long lastBonemealTime = 0;
 
     public AutoFarmPlus() {
-        super(AddonTemplate.CATEGORY, "auto-farm-plus", "Advanced all-in-one farm utility with glow berries support and fast mode.");
+        super(AddonTemplate.CATEGORY, "auto-farm+", "Advanced all-in-one farm utility with glow berries support and fast mode.");
     }
 
     @Override
