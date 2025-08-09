@@ -15,6 +15,7 @@ import com.example.addon.modules.AntiStaff;
 import com.example.addon.modules.AutoEatPlus;
 import com.example.addon.modules.AutoBuy;
 import com.example.addon.modules.AutoFarmPlus;
+import com.example.addon.modules.BowSpamPlus;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -46,6 +47,7 @@ public class AddonTemplate extends MeteorAddon {
         Modules.get().add(new AutoEatPlus());
         Modules.get().add(new AutoBuy());
         Modules.get().add(new AutoFarmPlus());
+        Modules.get().add(new BowSpamPlus());
 
         // Commands
         Commands.add(new CommandExample());

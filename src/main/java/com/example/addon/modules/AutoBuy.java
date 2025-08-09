@@ -10,6 +10,7 @@ import meteordevelopment.orbit.EventHandler;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
 import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.item.ItemStack;
 
 import java.util.*;
 
@@ -97,6 +98,46 @@ public class AutoBuy extends Module {
         .build()
     );
 
+    // Auto-Detection Settings
+    private final SettingGroup sgAutoDetection = settings.createGroup("Auto Detection");
+
+    private final Setting<Boolean> enableAutoDetection = sgAutoDetection.add(new BoolSetting.Builder()
+        .name("Enable Auto Detection")
+        .description("Automatically activate AutoBuy when whitelist items are below threshold")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<List<String>> itemWhitelist = sgAutoDetection.add(new StringListSetting.Builder()
+        .name("Item Whitelist")
+        .description("Items to monitor (format: 'minecraft:bone' or 'bone'). Click + to add items.")
+        .defaultValue(List.of("minecraft:bone", "minecraft:arrow"))
+        .visible(() -> enableAutoDetection.get())
+        .build()
+    );
+
+    private final Setting<Integer> minimumThreshold = sgAutoDetection.add(new IntSetting.Builder()
+        .name("Minimum Threshold")
+        .description("Minimum items required before auto-stopping (per item type)")
+        .defaultValue(120)
+        .min(1)
+        .max(2304) // 36 stacks * 64 items
+        .sliderMax(320)
+        .visible(() -> enableAutoDetection.get())
+        .build()
+    );
+
+    private final Setting<Integer> checkInterval = sgAutoDetection.add(new IntSetting.Builder()
+        .name("Check Interval")
+        .description("How often to check inventory (in ticks)")
+        .defaultValue(40) // 2 seconds
+        .min(10)
+        .max(200)
+        .sliderMax(100)
+        .visible(() -> enableAutoDetection.get())
+        .build()
+    );
+
     // Internal state and slot storage
     private boolean waitingForGui = false;
     private boolean isProcessing = false;
@@ -107,6 +148,11 @@ public class AutoBuy extends Module {
     private int maxSafeSlot = 26; // Default to single chest, will be updated on GUI detection
     private long lastRepeatTime = 0;
     private boolean completedOneCycle = false;
+
+    // Auto-Detection state
+    private int autoDetectionTimer = 0;
+    private boolean autoActivatedByDetection = false;
+    private String currentDetectedItem = "";
 
     public AutoBuy() {
         super(AddonTemplate.CATEGORY, "auto-buy", "Automatically buy items from shop with dynamic slot configuration");
@@ -134,7 +180,9 @@ public class AutoBuy extends Module {
         ChatUtils.info("AutoBuy started - executing: " + shopCommand.get());
         ChatUtils.info("Will click " + validSlots.size() + " slots: " + getSlotListString());
 
-        if (repeatMode.get()) {
+        if (autoActivatedByDetection) {
+            ChatUtils.info("Auto-Detection Mode: Buying " + currentDetectedItem + " until " + minimumThreshold.get() + " items");
+        } else if (repeatMode.get()) {
             ChatUtils.info("Repeat Mode enabled - will repeat every " + repeatDelay.get() + " seconds");
         } else {
             ChatUtils.info("Single Mode - will run once and disable");
@@ -156,10 +204,19 @@ public class AutoBuy extends Module {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player == null || mc.world == null) return;
 
+        // === AUTO-DETECTION LOGIC ===
+        if (enableAutoDetection.get() && !isActive()) {
+            autoDetectionTimer++;
+            if (autoDetectionTimer >= checkInterval.get()) {
+                checkInventoryForItems(mc);
+                autoDetectionTimer = 0;
+            }
+        }
+
         // === REPEAT MODE LOGIC ===
         // Check if we completed one cycle and should repeat or disable
         if (completedOneCycle) {
-            if (repeatMode.get()) {
+            if (repeatMode.get() && !autoActivatedByDetection) {
                 // Check if enough time has passed for next repeat
                 long currentTime = System.currentTimeMillis();
                 if (currentTime - lastRepeatTime >= repeatDelay.get() * 1000) {
@@ -178,10 +235,35 @@ public class AutoBuy extends Module {
                     return; // Important: return here to prevent processing in same tick
                 }
             } else {
-                // Single mode - disable after completion
-                ChatUtils.info("Single Mode: Completed one cycle, disabling AutoBuy");
-                toggle();
-                return;
+                // Single mode or auto-activated - check if we should disable
+                if (autoActivatedByDetection) {
+                    // Check if we now have enough items
+                    if (hasEnoughItems(mc)) {
+                        ChatUtils.info("Auto-Detection: Target reached for " + currentDetectedItem + ", disabling AutoBuy");
+                        autoActivatedByDetection = false;
+                        currentDetectedItem = "";
+                        toggle();
+                        return;
+                    } else {
+                        // Still need more items, continue buying
+                        completedOneCycle = false;
+                        isProcessing = false;
+                        waitingForGui = false;
+                        waitingToClose = false;
+                        currentPhase = 0;
+                        tickCounter = 0;
+                        currentSlotIndex = 0;
+
+                        executeShopCommand();
+                        ChatUtils.info("Auto-Detection: Still need " + currentDetectedItem + ", continuing...");
+                        return;
+                    }
+                } else {
+                    // Single mode - disable after completion
+                    ChatUtils.info("Single Mode: Completed one cycle, disabling AutoBuy");
+                    toggle();
+                    return;
+                }
             }
         }        // === MAIN AUTO BUY LOGIC ===
         if (isActive() && isProcessing) {
@@ -422,6 +504,64 @@ public class AutoBuy extends Module {
 
     public String getInfo() {
         List<Integer> validSlots = getValidSlots();
+        if (enableAutoDetection.get()) {
+            return "Slots: " + validSlots.size() + " | Auto-Detection: " +
+                   (autoActivatedByDetection ? "Active (" + currentDetectedItem + ")" : "Monitoring");
+        }
         return "Slots: " + validSlots.size() + " configured";
+    }
+
+    // === AUTO-DETECTION METHODS ===
+    private void checkInventoryForItems(MinecraftClient mc) {
+        if (mc.player == null || mc.player.getInventory() == null) return;
+
+        for (String itemName : itemWhitelist.get()) {
+            String cleanItemName = cleanItemName(itemName);
+            int itemCount = countItemInInventory(mc, cleanItemName);
+
+            if (itemCount < minimumThreshold.get()) {
+                ChatUtils.info("Auto-Detection: " + cleanItemName + " is below threshold (" + itemCount + "/" + minimumThreshold.get() + ")");
+                ChatUtils.info("Auto-Detection: Activating AutoBuy to purchase " + cleanItemName);
+
+                currentDetectedItem = cleanItemName;
+                autoActivatedByDetection = true;
+                toggle(); // Activate AutoBuy
+                return; // Only handle one item at a time
+            }
+        }
+    }
+
+    private boolean hasEnoughItems(MinecraftClient mc) {
+        if (mc.player == null || mc.player.getInventory() == null || currentDetectedItem.isEmpty()) {
+            return true; // If we can't check, assume we have enough
+        }
+
+        int itemCount = countItemInInventory(mc, currentDetectedItem);
+        return itemCount >= minimumThreshold.get();
+    }
+
+    private int countItemInInventory(MinecraftClient mc, String itemName) {
+        if (mc.player == null || mc.player.getInventory() == null) return 0;
+
+        int totalCount = 0;
+        for (int i = 0; i < mc.player.getInventory().size(); i++) {
+            ItemStack stack = mc.player.getInventory().getStack(i);
+            if (!stack.isEmpty()) {
+                String stackItemName = stack.getItem().toString();
+                if (stackItemName.contains(itemName) || itemName.contains(stackItemName)) {
+                    totalCount += stack.getCount();
+                }
+            }
+        }
+        return totalCount;
+    }
+
+    private String cleanItemName(String itemName) {
+        // Remove minecraft: prefix if present and convert to lowercase
+        String cleaned = itemName.toLowerCase().trim();
+        if (cleaned.startsWith("minecraft:")) {
+            cleaned = cleaned.substring(10);
+        }
+        return cleaned;
     }
 }
