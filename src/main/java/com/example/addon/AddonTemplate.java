@@ -17,6 +17,7 @@ import com.example.addon.modules.AutoBuy;
 import com.example.addon.modules.AutoFarmPlus;
 import com.example.addon.modules.BowSpamPlus;
 import com.example.addon.modules.AutoTriggerPlus;
+import com.example.addon.modules.BoneMealCrafter;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -50,6 +51,7 @@ public class AddonTemplate extends MeteorAddon {
         Modules.get().add(new AutoFarmPlus());
         Modules.get().add(new BowSpamPlus());
         Modules.get().add(new AutoTriggerPlus());
+        Modules.get().add(new BoneMealCrafter());
 
         // Commands
         Commands.add(new CommandExample());
