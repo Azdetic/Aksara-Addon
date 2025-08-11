@@ -19,6 +19,7 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ArrowItem;
 import net.minecraft.item.Items;
 import net.minecraft.world.GameMode;
+import net.minecraft.util.Hand;
 
 import java.util.Set;
 
@@ -48,6 +49,13 @@ public class BowSpamPlus extends Module {
     private final Setting<Boolean> requireArrows = sgGeneral.add(new BoolSetting.Builder()
         .name("Require Arrows")
         .description("Only work when arrows are available in inventory")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> bypassGui = sgGeneral.add(new BoolSetting.Builder()
+        .name("Bypass GUI")
+        .description("Keep bow spam working while inventory or GUI is open")
         .defaultValue(true)
         .build()
     );
@@ -313,7 +321,18 @@ public class BowSpamPlus extends Module {
     }
 
     private void setPressed(boolean pressed) {
-        mc.options.useKey.setPressed(pressed);
+        if (bypassGui.get() && mc.currentScreen != null) {
+            if (mc.player == null || mc.interactionManager == null) return;
+            if (pressed) {
+                // Start charging bow via packet even when a screen is open
+                if (!mc.player.isUsingItem()) mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND);
+            } else {
+                // Release bow
+                if (mc.player.isUsingItem()) mc.interactionManager.stopUsingItem(mc.player);
+            }
+        } else {
+            mc.options.useKey.setPressed(pressed);
+        }
     }
 
     public String getInfo() {
